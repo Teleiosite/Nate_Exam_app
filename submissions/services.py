@@ -73,23 +73,35 @@ class ExamAssignmentService:
         """
         Starts an exam for a student.
         """
-        # Check if already started
-        existing = ExamAssignment.objects.filter(exam=exam, student=student).first()
-        if existing:
-            if existing.status != ExamAssignment.Status.NOT_STARTED:
-                return existing
+        # Check for existing assignments
+        existing_assignments = ExamAssignment.objects.filter(exam=exam, student=student).order_by('-created_at')
+        
+        if existing_assignments.exists():
+            latest = existing_assignments.first()
             
-            existing.status = ExamAssignment.Status.IN_PROGRESS
-            existing.started_at = timezone.now()
-            existing.save()
-            return existing
+            # If the latest assignment is in progress or not started, resume it
+            if latest.status in [ExamAssignment.Status.NOT_STARTED, ExamAssignment.Status.IN_PROGRESS]:
+                if latest.status == ExamAssignment.Status.NOT_STARTED:
+                    latest.status = ExamAssignment.Status.IN_PROGRESS
+                    latest.started_at = timezone.now()
+                    latest.save()
+                return latest
+            
+            # If completed, check if retake is allowed
+            if latest.status in [ExamAssignment.Status.SUBMITTED, ExamAssignment.Status.GRADED]:
+                retake_count = existing_assignments.count()
+                if retake_count >= exam.retake_limit:
+                    raise ValidationError(f"Maximum retake limit ({exam.retake_limit}) reached.")
+                # Fall through to create new assignment for retake
 
-        # Create new assignment
+        # Create new assignment (first attempt or retake)
+        retake_count = existing_assignments.count() if existing_assignments.exists() else 0
         assignment = ExamAssignment.objects.create(
             exam=exam,
             student=student,
             status=ExamAssignment.Status.IN_PROGRESS,
-            started_at=timezone.now()
+            started_at=timezone.now(),
+            retake_count=retake_count
         )
         
         # Initialize empty responses for all questions
