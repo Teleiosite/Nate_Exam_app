@@ -11,8 +11,6 @@ class QuestionOptionSerializer(serializers.ModelSerializer):
         fields = ('id', 'option_text', 'is_correct', 'order_index')
 
 class QuestionSerializer(serializers.ModelSerializer):
-    # Don't make options read_only - we need to accept them for create/update
-    # But we'll ensure they're included in the response via to_representation
     options = QuestionOptionSerializer(many=True, required=False)
 
     class Meta:
@@ -42,7 +40,6 @@ class ExamDetailSerializer(serializers.ModelSerializer):
     specialization = serializers.PrimaryKeyRelatedField(
         queryset=EngineeringSpecialization.objects.all()
     )
-    # Read-only fields
     instructor = CustomUserSerializer(read_only=True)
 
     class Meta:
@@ -55,6 +52,8 @@ class ExamDetailSerializer(serializers.ModelSerializer):
         ret = super().to_representation(instance)
         ret['specialization'] = EngineeringSpecializationSerializer(instance.specialization).data
         ret['instructor'] = CustomUserSerializer(instance.instructor).data
+        # Ensure questions are represented with their own serializer logic, including options
+        ret['questions'] = QuestionSerializer(instance.questions.all(), many=True).data
         return ret
 
     def create(self, validated_data):
@@ -63,8 +62,10 @@ class ExamDetailSerializer(serializers.ModelSerializer):
         
         for question_data in questions_data:
             options_data = question_data.pop('options', [])
+            question_data.pop('id', None)  # FIX: Remove temporary ID before creating question
             question = Question.objects.create(exam=exam, **question_data)
             for option_data in options_data:
+                option_data.pop('id', None) # FIX: Remove temporary ID before creating option
                 QuestionOption.objects.create(question=question, **option_data)
         
         return exam
@@ -73,53 +74,55 @@ class ExamDetailSerializer(serializers.ModelSerializer):
         questions_data = validated_data.pop('questions', [])
         
         # Update exam fields
-        for attr, value in validated_data.items():
-            setattr(instance, attr, value)
+        instance.title = validated_data.get('title', instance.title)
+        instance.specialization = validated_data.get('specialization', instance.specialization)
+        instance.duration_minutes = validated_data.get('duration_minutes', instance.duration_minutes)
+        instance.retake_limit = validated_data.get('retake_limit', instance.retake_limit)
+        # Add any other fields from the Exam model that should be updatable
         instance.save()
 
-        # Handle questions (simple replacement strategy for now, or update existing)
-        # For simplicity in this phase, we can delete existing and recreate, 
-        # BUT that destroys student response links. 
-        # So we should update existing ones if ID is present.
-        
-        # Map existing questions
-        existing_questions = {q.id: q for q in instance.questions.all()}
+        existing_questions = {str(q.id): q for q in instance.questions.all()}
         kept_question_ids = []
 
         for question_data in questions_data:
             question_id = question_data.get('id')
             options_data = question_data.pop('options', [])
             
-            if question_id and question_id in existing_questions:
-                # Update existing
-                question = existing_questions[question_id]
-                for attr, value in question_data.items():
-                    setattr(question, attr, value)
+            # If ID is present and it's a real one (not a temp frontend ID)
+            if question_id and str(question_id) in existing_questions:
+                question = existing_questions[str(question_id)]
+                # Update question fields
+                question.question_text = question_data.get('question_text', question.question_text)
+                question.question_type = question_data.get('question_type', question.question_type)
+                question.points = question_data.get('points', question.points)
+                question.order_index = question_data.get('order_index', question.order_index)
+                # ... any other fields
                 question.save()
-                kept_question_ids.append(question.id)
+                kept_question_ids.append(str(question.id))
                 
-                # Handle options for this question (delete/recreate is safer for options as they are small)
+                # For options, a delete-and-recreate strategy is simpler and safer
                 question.options.all().delete()
-                print(f"UPDATE: Question {question.id}, Options data: {options_data}")
-                for opt_idx, option_data in enumerate(options_data):
-                    print(f"  Creating option {opt_idx}: {option_data}")
-                    # option_data already contains order_index from frontend, don't pass it again
+                for option_data in options_data:
+                    option_data.pop('id', None) # Remove ID before creating
                     QuestionOption.objects.create(question=question, **option_data)
             else:
-                # Create new
-                question = Question.objects.create(exam=instance, **question_data)
-                kept_question_ids.append(question.id)
-                print(f"CREATE: Question {question.id}, Options data: {options_data}")
-                for opt_idx, option_data in enumerate(options_data):
-                    print(f"  Creating option {opt_idx}: {option_data}")
-                    # option_data already contains order_index from frontend, don't pass it again
-                    QuestionOption.objects.create(question=question, **option_data)
+                # Create new question if ID is missing or temporary
+                question_data.pop('id', None)
+                new_question = Question.objects.create(exam=instance, **question_data)
+                kept_question_ids.append(str(new_question.id))
+                for option_data in options_data:
+                    option_data.pop('id', None)
+                    QuestionOption.objects.create(question=new_question, **option_data)
 
-        # Delete removed questions
+        # Delete questions that were removed in the frontend
         for q_id, q in existing_questions.items():
             if q_id not in kept_question_ids:
                 q.delete()
 
+        # Recalculate total points after all updates
+        instance.total_points = sum(q.points for q in instance.questions.all())
+        instance.save()
+        
         return instance
 
 class QuestionBankSerializer(serializers.ModelSerializer):

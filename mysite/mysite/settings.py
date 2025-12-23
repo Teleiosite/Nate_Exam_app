@@ -131,9 +131,9 @@ SIMPLE_JWT = {
 }
 
 # CORS
-CORS_ALLOWED_ORIGINS = config('CORS_ALLOWED_ORIGINS', default='http://localhost:3000').split(',')
+CORS_ALLOW_ALL_ORIGINS = True
 CORS_ALLOW_CREDENTIALS = True
-CSRF_TRUSTED_ORIGINS = ['https://8000-firebase-nate-project-1763117416013.cluster-cbeiita7rbe7iuwhvjs5zww2i4.cloudworkstations.dev']
+CSRF_TRUSTED_ORIGINS = ['https://8000-firebase-nate-project-1763117416013.cluster-cbeiita7rbe7iuwhvjs5zww2i4.cloudworkstations.dev', 'https://3000-firebase-nate-project-1763117416013.cluster-cbeiita7rbe7iuwhvjs5zww2i4.cloudworkstations.dev']
 
 # Internationalization
 # https://docs.djangoproject.com/en/5.0/topics/i18n/
