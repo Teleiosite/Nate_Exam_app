@@ -14,16 +14,25 @@ const mockQuestionBank: QuestionBank = [
   { id: 'qb4', text: 'What does `useState` return?', questionType: QuestionType.MultipleChoice, options: [{ id: 'qb4o1', text: 'A state value and a function to update it', isCorrect: true }, { id: 'qb4o2', text: 'Only the state value' }], correctAnswer: 'qb4o1', points: 5, orderIndex: 3 },
 ];
 
+const API_PATHS = {
+  EXAMS: '/api/exams/',
+  EXAM_DETAIL: (id: string) => `/api/exams/${id}/`,
+  SPECIALIZATIONS: '/api/accounts/specializations/',
+  SUBMISSIONS: '/api/submissions/exam_assignments/',
+  SUBMISSION_DETAIL: (id: string) => `/api/submissions/exam_assignments/${id}/`,
+};
+
+const TEMP_ID_PREFIX = {
+  EXAM: 'exam-',
+  QUESTION: 'q-',
+  OPTION: 'opt-',
+};
+
 const InstructorDashboard: React.FC = () => {
   const { user, logout } = useAuth();
   const [selectedExam, setSelectedExam] = useState<Exam | null>(null);
   const [myExams, setMyExams] = useState<Exam[]>([]);
   const [allSubmissions, setAllSubmissions] = useState<ExamAssignment[]>([]);
-  const [isCreatingExam, setIsCreatingExam] = useState(false);
-  const [editingExam, setEditingExam] = useState<Exam | null>(null);
-  const [viewingExam, setViewingExam] = useState<Exam | null>(null);
-  const [showGrading, setShowGrading] = useState(false);
-  const [selectedExamId, setSelectedExamId] = useState<string | null>(null);
   const [view, setView] = useState<View>('builder');
   const [currentTab, setCurrentTab] = useState<Tab>('exams');
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
@@ -37,7 +46,7 @@ const InstructorDashboard: React.FC = () => {
     const headers = { 'Authorization': `Bearer ${token}` };
 
     try {
-      const examRes = await fetch('/api/exams/', { headers });
+      const examRes = await fetch(API_PATHS.EXAMS, { headers });
       if (examRes.ok) {
         const examsData = await examRes.json();
         // Handle paginated response
@@ -79,7 +88,7 @@ const InstructorDashboard: React.FC = () => {
 
       try {
         // Fetch Specializations
-        const specRes = await fetch('/api/accounts/specializations/', { headers });
+        const specRes = await fetch(API_PATHS.SPECIALIZATIONS, { headers });
         if (specRes.ok) {
           const specs = await specRes.json();
           // Handle paginated response
@@ -91,7 +100,7 @@ const InstructorDashboard: React.FC = () => {
         await fetchExams();
 
         // Fetch Submissions
-        const subRes = await fetch('/api/submissions/exam_assignments/', { headers });
+        const subRes = await fetch(API_PATHS.SUBMISSIONS, { headers });
         if (subRes.ok) {
           const subData = await subRes.json();
           const subList = Array.isArray(subData) ? subData : (subData.results || []);
@@ -147,7 +156,7 @@ const InstructorDashboard: React.FC = () => {
   const fetchExamDetails = async (examId: string) => {
     const token = localStorage.getItem('access_token');
     try {
-      const res = await fetch(`/api/exams/${examId}/`, {
+      const res = await fetch(API_PATHS.EXAM_DETAIL(examId), {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       if (res.ok) {
@@ -217,10 +226,38 @@ const InstructorDashboard: React.FC = () => {
     setSaveStatus('saving');
     const token = localStorage.getItem('access_token');
 
+    // Ensure specializations are loaded if empty
+    let currentSpecs = specializations;
+    if (currentSpecs.length === 0) {
+      try {
+        const specRes = await fetch(API_PATHS.SPECIALIZATIONS, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (specRes.ok) {
+          const specs = await specRes.json();
+          const specsList = Array.isArray(specs) ? specs : (specs.results || []);
+          setSpecializations(specsList);
+          currentSpecs = specsList;
+        } else {
+          console.error("Failed to fetch specializations. Status:", specRes.status);
+        }
+      } catch (e) {
+        console.error("Failed to fetch specializations on save retry", e);
+      }
+    }
+
     // Find specialization ID
-    const specId = specializations.find(s => s.name === selectedExam.department)?.id;
+    let specId = currentSpecs.find(s => s.name === selectedExam.department)?.id;
+    
+    // Fallback: if the exam's department doesn't match any loaded specialization, use the first available one
+    if (!specId && currentSpecs.length > 0) {
+      specId = currentSpecs[0].id;
+    }
+
     if (!specId) {
       console.error("Invalid specialization");
+      alert("Unable to save: Invalid specialization. Please ensure specializations are loaded.");
+      alert("Unable to save: Invalid specialization. Could not load departments. Please ensure the backend is running.");
       setSaveStatus('idle');
       return;
     }
@@ -233,13 +270,13 @@ const InstructorDashboard: React.FC = () => {
       duration_minutes: selectedExam.durationMinutes,
       retake_limit: selectedExam.retakeLimit,
       questions: selectedExam.questions.map((q, idx) => ({
-        id: q.id.startsWith('q-') ? undefined : q.id, // Send ID for existing questions, undefined for temp IDs
+        id: q.id.startsWith(TEMP_ID_PREFIX.QUESTION) ? undefined : q.id, // Send ID for existing questions, undefined for temp IDs
         question_text: q.text,
         question_type: q.questionType,
         points: q.points,
         order_index: idx,
         options: (q.options || []).map((o, oIdx) => ({
-          id: o.id && !o.id.startsWith('opt-') ? o.id : undefined, // Include option IDs if they exist
+          id: o.id && !o.id.startsWith(TEMP_ID_PREFIX.OPTION) ? o.id : undefined, // Include option IDs if they exist
           option_text: o.text,
           is_correct: o.isCorrect || false,
           order_index: oIdx
@@ -248,8 +285,8 @@ const InstructorDashboard: React.FC = () => {
     };
 
     try {
-      const isNew = selectedExam.id.startsWith('exam-');
-      const url = isNew ? '/api/exams/' : `/api/exams/${selectedExam.id}/`;
+      const isNew = selectedExam.id.startsWith(TEMP_ID_PREFIX.EXAM);
+      const url = isNew ? API_PATHS.EXAMS : API_PATHS.EXAM_DETAIL(selectedExam.id);
       const method = isNew ? 'POST' : 'PUT';
 
       const res = await fetch(url, {
@@ -326,7 +363,7 @@ const InstructorDashboard: React.FC = () => {
     // Save to backend
     const token = localStorage.getItem('access_token');
     try {
-      const res = await fetch(`/api/submissions/exam_assignments/${updatedSubmission.id}/`, {
+      const res = await fetch(API_PATHS.SUBMISSION_DETAIL(updatedSubmission.id), {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
@@ -351,15 +388,25 @@ const InstructorDashboard: React.FC = () => {
 
   const handleCreateNewExam = () => {
     if (!user) return;
+
+    // Determine a valid department from loaded specializations
+    let initialDept = user.department;
+    const specExists = specializations.some(s => s.name === initialDept);
+    
+    if (!specExists && specializations.length > 0) {
+      // If user's department isn't in the list, default to the first available specialization
+      initialDept = specializations[0].name as EngineeringDepartment;
+    }
+
     const newExam: Exam = {
-      id: `exam-${Date.now()}`,
+      id: `${TEMP_ID_PREFIX.EXAM}${Date.now()}`,
       title: 'Untitled Exam',
       durationMinutes: 60,
       retakeLimit: 1,
       questions: [],
       instructorId: user.id,
       instructorName: user.firstName,
-      department: user.department || EngineeringDepartment.Mechanical,
+      department: initialDept || EngineeringDepartment.Mechanical,
     };
     setSelectedExam(newExam);
     setView('builder');
@@ -386,7 +433,7 @@ const InstructorDashboard: React.FC = () => {
 
     const token = localStorage.getItem('access_token');
     try {
-      const res = await fetch(`/api/exams/${examId}/`, {
+      const res = await fetch(API_PATHS.EXAM_DETAIL(examId), {
         method: 'DELETE',
         headers: {
           'Authorization': `Bearer ${token}`
